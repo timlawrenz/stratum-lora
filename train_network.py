@@ -316,7 +316,7 @@ class NetworkTrainer:
                 network.set_multiplier(1.0)  # may be overwritten by "network_multipliers" in the next step
                 target[diff_output_pr_indices] = noise_pred_prior.to(target.dtype)
 
-        return noise_pred, target, timesteps, None
+        return noise_pred, target, timesteps, None, noisy_latents
 
     def post_process_loss(self, loss, args, timesteps: torch.IntTensor, noise_scheduler) -> torch.FloatTensor:
         if args.min_snr_gamma:
@@ -448,7 +448,7 @@ class NetworkTrainer:
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
 
         # sample noise, call unet, get target
-        noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
+        noise_pred, target, timesteps, weighting, noisy_latents = self.get_noise_pred_and_target(
             args,
             accelerator,
             noise_scheduler,
@@ -474,6 +474,37 @@ class NetworkTrainer:
         loss = loss * loss_weights
 
         loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
+
+        # --- AuraFace Identity Loss (gradient-normalized) ---
+        if self.auraface is not None and self.auraface_config is not None:
+            from library.auraface_loss import tweedie_x0_estimate, compute_id_loss
+
+            x0_hat = tweedie_x0_estimate(
+                noise_pred, noisy_latents, timesteps, noise_scheduler
+            )
+
+            # retain_grad() is required so the gradient hook fires
+            x0_hat.retain_grad()
+
+            id_loss = compute_id_loss(
+                x0_hat, timesteps, batch, vae, self.auraface,
+                self.auraface_config, noise_scheduler, weight_dtype,
+            )
+
+            if id_loss is not None:
+                scaled_id_loss = self.auraface_config.lambda_id * id_loss
+
+                # Gradient normalization: the VAE decoder Jacobian amplifies
+                # gradients by ~1/scaling_factor² when backpropagating from
+                # pixel space to latent space. Dividing by scaling_factor²
+                # cancels this amplification, keeping identity gradient
+                # magnitude comparable to the noise loss gradient.
+                def normalize_id_grad(grad):
+                    return grad / (vae.config.scaling_factor ** 2)
+
+                x0_hat.register_hook(normalize_id_grad)
+
+                loss = loss + scaled_id_loss
 
         return loss.mean()
 
@@ -919,6 +950,41 @@ class NetworkTrainer:
             vae.requires_grad_(False)
             vae.eval()
             vae.to(accelerator.device, dtype=vae_dtype)
+
+        # Initialize AuraFace identity loss if enabled
+        self.auraface = None
+        self.auraface_config = None
+        if getattr(args, 'auraface_lambda', 0.0) > 0.0 and args.auraface_data_dir:
+            from library.auraface_utils import AuraFaceWrapper, AuraFaceConfig, load_auraface_metadata
+
+            logger.info(f"Loading AuraFace for identity loss (lambda={args.auraface_lambda})")
+
+            self.auraface = AuraFaceWrapper(device=accelerator.device, dtype=weight_dtype)
+
+            metadata = load_auraface_metadata(args.auraface_data_dir)
+
+            if 'target_embedding' not in metadata:
+                logger.error(
+                    "No target_embedding found in auraface metadata. "
+                    "Run tools/compute_auraface_embeddings.py first. "
+                    "Identity loss disabled."
+                )
+            else:
+                target_emb = torch.from_numpy(metadata['target_embedding'])
+                self.auraface_config = AuraFaceConfig(
+                    lambda_id=args.auraface_lambda,
+                    timestep_threshold=args.auraface_threshold,
+                    target_embedding=target_emb,
+                    bboxes=metadata.get('bboxes', {}),
+                )
+                logger.info(
+                    f"AuraFace loaded. Embedding dim: {self.auraface.get_embedding_dim()}"
+                )
+
+                # Enable VAE memory optimizations for in-loop decoding
+                vae.enable_tiling()
+                vae.enable_slicing()
+                logger.info("VAE tiling and slicing enabled for memory-efficient decode")
 
         # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
         if args.full_fp16:
@@ -1899,6 +1965,27 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         help="Max number of validation dataset items processed. By default, validation will run the entire validation dataset / 処理される検証データセット項目の最大数。デフォルトでは、検証は検証データセット全体を実行します",
     )
+
+    # AuraFace Identity Loss arguments
+    parser.add_argument(
+        "--auraface_lambda",
+        type=float,
+        default=0.0,
+        help="Weight for AuraFace identity loss. 0.0 disables. Suggested: 0.1",
+    )
+    parser.add_argument(
+        "--auraface_data_dir",
+        type=str,
+        default=None,
+        help="Directory containing face_bboxes.npz and auraface_embeddings.npz",
+    )
+    parser.add_argument(
+        "--auraface_threshold",
+        type=float,
+        default=0.3,
+        help="Timestep threshold ratio for identity loss gating (0.0-1.0). Default: 0.3",
+    )
+
     return parser
 
 

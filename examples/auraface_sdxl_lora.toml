@@ -1,0 +1,46 @@
+# Example: AuraFace-enhanced SDXL LoRA training
+# Uses identity loss to improve persona preservation
+#
+# Usage:
+#   python train_network.py --config_file examples/auraface_sdxl_lora.toml
+
+pretrained_model_name_or_path = "stabilityai/stable-diffusion-xl-base-1.0"
+vae = ""
+output_dir = "./output/auraface_lora"
+output_name = "persona_lora"
+
+# Training data — run tools/compute_face_bboxes.py and
+# tools/compute_auraface_embeddings.py on this directory first
+train_data_dir = "./data/hegre-moloko"
+
+# Network configuration (LoRA)
+network_module = "networks.lora"
+network_dim = 32
+network_alpha = 16
+network_train_unet_only = true
+
+# Training parameters
+resolution = "1024,1024"
+batch_size = 1
+max_train_epochs = 10
+save_every_n_epochs = 1
+
+# Optimizer
+optimizer_type = "AdamW8bit"
+learning_rate = 1e-4
+
+# Noise schedule
+noise_scheduler = "ddpm"
+min_snr_gamma = 5.0
+
+# ── AuraFace Identity Loss ──
+# Set auraface_lambda to 0.0 to disable identity loss
+auraface_lambda = 0.1
+auraface_data_dir = "./data/hegre-moloko"
+auraface_threshold = 0.3
+
+# Other
+mixed_precision = "fp16"
+save_precision = "fp16"
+cache_latents = true
+cache_latents_to_disk = true

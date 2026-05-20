@@ -147,6 +147,9 @@ def compute_id_loss(
         target_emb = auraface_config.target_embedding.to(
             generated_embeddings.device
         )
+        # Squeeze extra dims from precomputation (may be (1,1,512) instead of (1,512))
+        while target_emb.dim() > 2:
+            target_emb = target_emb.squeeze(0)
         cos_sim = F.cosine_similarity(
             generated_embeddings,
             target_emb.expand(batch_size, -1),

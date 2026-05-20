@@ -974,6 +974,9 @@ class NetworkTrainer:
                 )
             else:
                 target_emb = torch.from_numpy(metadata['target_embedding'])
+                # Squeeze extra dims from precomputation
+                while target_emb.dim() > 2:
+                    target_emb = target_emb.squeeze(0)
                 self.auraface_config = AuraFaceConfig(
                     lambda_id=args.auraface_lambda,
                     timestep_threshold=args.auraface_threshold,

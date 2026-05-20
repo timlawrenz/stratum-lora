@@ -505,6 +505,8 @@ class NetworkTrainer:
                 x0_hat.register_hook(normalize_id_grad)
 
                 loss = loss + scaled_id_loss
+                self._last_id_loss = id_loss.detach()
+                self._last_scaled_id_loss = scaled_id_loss.detach()
 
         return loss.mean()
 
@@ -1604,6 +1606,10 @@ class NetworkTrainer:
                         mean_grad_norm,
                         mean_combined_norm,
                     )
+                    # Log AuraFace identity loss if available
+                    if hasattr(self, '_last_id_loss') and self._last_id_loss is not None:
+                        logs["loss/id"] = self._last_id_loss.item()
+                        logs["loss/id_scaled"] = self._last_scaled_id_loss.item()
                     self.step_logging(accelerator, logs, global_step, epoch + 1)
 
                 # VALIDATION PER STEP: global_step is already incremented

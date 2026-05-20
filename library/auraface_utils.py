@@ -147,7 +147,8 @@ class AuraFaceWrapper(nn.Module):
             return self._embedding_dim
         if self.model is None:
             raise RuntimeError("Face recognition model not loaded")
-        dummy = torch.rand(1, 3, self.input_size, self.input_size)
+        dummy = torch.rand(1, 3, self.input_size, self.input_size,
+                          device=self.device, dtype=self.dtype)
         with torch.no_grad():
             emb = self.forward(dummy)
         self._embedding_dim = emb.shape[-1]

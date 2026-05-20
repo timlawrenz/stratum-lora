@@ -138,8 +138,10 @@ def save_results(bboxes: dict, image_dir: Path, output_base: Path):
     """Save bounding boxes as .json and .npz."""
     # JSON
     json_path = output_base.with_suffix('.json')
+    # Convert numpy ints to Python ints for JSON serialization
+    json_bboxes = {k: [int(x) for x in v] for k, v in bboxes.items()}
     with open(json_path, 'w') as f:
-        json.dump(bboxes, f, indent=2)
+        json.dump(json_bboxes, f, indent=2)
 
     # NPZ
     npz_path = output_base.with_suffix('.npz')

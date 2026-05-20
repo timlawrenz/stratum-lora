@@ -959,7 +959,10 @@ class NetworkTrainer:
 
             logger.info(f"Loading AuraFace for identity loss (lambda={args.auraface_lambda})")
 
-            self.auraface = AuraFaceWrapper(device=accelerator.device, dtype=weight_dtype)
+            self.auraface = AuraFaceWrapper(
+                device=accelerator.device, dtype=weight_dtype,
+                arcface_weights=getattr(args, 'arcface_weights', None),
+            )
 
             metadata = load_auraface_metadata(args.auraface_data_dir)
 
@@ -1984,6 +1987,13 @@ def setup_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.3,
         help="Timestep threshold ratio for identity loss gating (0.0-1.0). Default: 0.3",
+    )
+    parser.add_argument(
+        "--arcface_weights",
+        type=str,
+        default=None,
+        help="Path to PyTorch ArcFace weights (.pth) for differentiable identity loss. "
+             "Download from insightface recognition/arcface_torch model zoo.",
     )
 
     return parser

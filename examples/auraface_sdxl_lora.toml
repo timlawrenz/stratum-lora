@@ -39,6 +39,11 @@ auraface_lambda = 0.1
 auraface_data_dir = "./data/hegre-moloko"
 auraface_threshold = 0.3
 
+# Path to PyTorch ArcFace weights for differentiable identity loss
+# Download from: https://github.com/deepinsight/insightface/tree/master/recognition/arcface_torch
+# Recommended: Glint360K R100 (glint360k_r100.pth)
+arcface_weights = "./models/glint360k_r100.pth"
+
 # Other
 mixed_precision = "fp16"
 save_precision = "fp16"

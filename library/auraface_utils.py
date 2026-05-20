@@ -1,123 +1,142 @@
 """
-AuraFace utilities for identity embedding extraction.
+AuraFace / ArcFace utilities for identity embedding extraction.
 
-AuraFace is loaded as a frozen model. Its forward pass is differentiable,
-so gradients flow through to the input image (our x̂₀ estimate).
+Supports two backends:
+  - ONNX (via insightface) for offline precomputation (non-differentiable)
+  - PyTorch ArcFace (via IResNet-100) for training-time identity loss (differentiable)
 
-Model source: https://huggingface.co/auraness/auraface
+ONNX Model source: https://huggingface.co/fal/AuraFace-v1
+PyTorch ArcFace weights: insightface recognition/arcface_torch model zoo
 """
 
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
 from typing import Optional
+import numpy as np
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
 
 class AuraFaceWrapper(nn.Module):
-    """Frozen AuraFace model that outputs a normalized identity embedding."""
+    """Frozen face recognition model for identity embedding extraction.
+    
+    Two loading modes:
+    1. ONNX (default): Loads glintr100.onnx from fal/AuraFace-v1 via insightface.
+       Non-differentiable — use for offline target embedding precomputation.
+    2. PyTorch ArcFace: Loads IResNet-100 weights from a .pth file.
+       Fully differentiable — use for training-time identity loss.
+    
+    Input: (B, 3, 112, 112) tensor, values in [0, 1], RGB.
+    Output: L2-normalized embedding of shape (B, 512).
+    """
 
-    def __init__(self, device: torch.device, dtype: torch.dtype = torch.float32):
+    def __init__(self, device: torch.device = None, dtype: torch.dtype = torch.float32,
+                 arcface_weights: Optional[str] = None):
         super().__init__()
-        self.device = device
+        self.device = device or torch.device("cpu")
         self.dtype = dtype
-
-        # AuraFace expects 112x112 RGB images normalized to [0, 1]
         self.input_size = 112
+        self._embedding_dim = None
+        self._use_pytorch = False
 
-        # Load model from HF hub
-        self.model = self._load_auraface()
-        self.model.to(device=device, dtype=dtype)
-        self.model.eval()
+        if arcface_weights and os.path.exists(arcface_weights):
+            self.model = self._load_pytorch_arcface(arcface_weights)
+            self._use_pytorch = True
+            logger.info(f"ArcFace (PyTorch) loaded on {self.device}")
+        else:
+            self.model = self._load_onnx_auraface()
+            logger.info(f"AuraFace (ONNX) loaded on {self.device}")
 
-        # Freeze all parameters
-        for param in self.model.parameters():
+    def _load_pytorch_arcface(self, weights_path: str):
+        """Load ArcFace IResNet-100 from PyTorch checkpoint (differentiable)."""
+        from .iresnet import iresnet100
+
+        model = iresnet100(fp16=(self.dtype == torch.float16))
+        state = torch.load(weights_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(state, strict=False)
+        model.to(device=self.device, dtype=self.dtype)
+        model.eval()
+
+        # Freeze all parameters — gradients flow through to input, not into model
+        for param in model.parameters():
             param.requires_grad_(False)
 
-        self._embedding_dim = None
-        logger.info(f"AuraFace loaded on {device}")
+        logger.info(f"Loaded ArcFace PyTorch weights from {weights_path}")
+        return model
 
-    def _load_auraface(self):
-        """Load AuraFace from HuggingFace hub with multi-tier fallback."""
+    def _load_onnx_auraface(self):
+        """Load AuraFace ONNX model via insightface (non-differentiable)."""
         from huggingface_hub import snapshot_download
-        import os
-        import sys
+        import insightface
 
-        repo_id = "auraness/auraface"
+        repo_id = "fal/AuraFace-v1"
 
         try:
             model_path = snapshot_download(repo_id)
         except Exception as e:
-            logger.warning(f"Could not download AuraFace from HF: {e}")
-            logger.warning("AuraFace will be unavailable. Identity loss disabled.")
+            logger.error(f"Could not download AuraFace: {e}")
             return None
 
-        sys.path.insert(0, model_path)
-
-        # Strategy 1: Try backbones.get_model (common face rec layout)
-        try:
-            from backbones import get_model
-            model = get_model("iresnet50", fp16=(self.dtype == torch.float16))
-            # Try to load weights
+        onnx_path = os.path.join(model_path, "glintr100.onnx")
+        if not os.path.exists(onnx_path):
             for fname in os.listdir(model_path):
-                if fname.endswith(('.pth', '.pt', '.bin')):
-                    weights_path = os.path.join(model_path, fname)
-                    state = torch.load(weights_path, map_location="cpu")
-                    model.load_state_dict(state, strict=False)
-                    logger.info(f"Loaded AuraFace weights from {fname}")
+                if fname.endswith('.onnx') and 'det' not in fname.lower():
+                    onnx_path = os.path.join(model_path, fname)
                     break
+
+        if not os.path.exists(onnx_path):
+            logger.error(f"No ONNX model found in {model_path}")
+            return None
+
+        try:
+            model = insightface.model_zoo.get_model(onnx_path)
+            ctx_id = 0 if torch.cuda.is_available() else -1
+            model.prepare(ctx_id=ctx_id)
+            logger.info(f"Loaded AuraFace ONNX from {onnx_path}")
             return model
-        except ImportError:
-            logger.debug("backbones.get_model not available, trying fallback")
         except Exception as e:
-            logger.debug(f"backbones approach failed: {e}")
-
-        # Strategy 2: Try loading any .pth/.pt file as a full model
-        for fname in os.listdir(model_path):
-            if fname.endswith(('.pth', '.pt')):
-                try:
-                    model = torch.load(
-                        os.path.join(model_path, fname),
-                        map_location="cpu",
-                        weights_only=False,
-                    )
-                    if isinstance(model, nn.Module):
-                        logger.info(f"Loaded AuraFace from {fname}")
-                        return model
-                except Exception:
-                    continue
-
-        logger.warning(
-            "Could not load AuraFace model from downloaded files. "
-            "Check the repo structure at https://huggingface.co/auraness/auraface. "
-            "Manual setup may be required."
-        )
-        return None
+            logger.error(f"Failed to load AuraFace ONNX: {e}")
+            return None
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """
         Extract identity embedding from face images.
 
         Args:
-            images: Tensor of shape (B, 3, 112, 112), values in [0, 1]
+            images: Tensor of shape (B, 3, 112, 112), values in [0, 1], RGB
 
         Returns:
             Normalized embedding of shape (B, embedding_dim)
         """
         if self.model is None:
-            raise RuntimeError("AuraFace model not loaded")
+            raise RuntimeError("Face recognition model not loaded")
 
-        # Normalize to model's expected input range (mean=0.5, std=0.5)
-        images = (images - 0.5) / 0.5
+        if self._use_pytorch:
+            # PyTorch path: fully differentiable
+            images = (images - 0.5) / 0.5  # Normalize to [-1, 1]
+            with torch.set_grad_enabled(True):
+                embedding = self.model(images)
+        else:
+            # ONNX path: non-differentiable (numpy bridge)
+            images_np = images.detach().cpu().numpy()
+            images_np = (images_np * 255.0).astype(np.uint8)
 
-        with torch.set_grad_enabled(True):  # Gradients flow through to input
-            embedding = self.model(images)
+            embeddings = []
+            for i in range(images_np.shape[0]):
+                img = images_np[i].transpose(1, 2, 0)
+                img = img[:, :, ::-1]  # RGB -> BGR
+                feat = self.model.get_feat(img)
+                embeddings.append(feat)
 
-        # L2 normalize the embedding
+            embedding = torch.from_numpy(np.stack(embeddings)).to(
+                device=self.device, dtype=self.dtype
+            )
+
+        # L2 normalize
         embedding = nn.functional.normalize(embedding, p=2, dim=-1)
-
         return embedding
 
     def get_embedding_dim(self) -> int:
@@ -125,13 +144,17 @@ class AuraFaceWrapper(nn.Module):
         if self._embedding_dim is not None:
             return self._embedding_dim
         if self.model is None:
-            raise RuntimeError("AuraFace model not loaded — cannot determine embedding dim")
-        dummy = torch.randn(1, 3, self.input_size, self.input_size,
-                           device=self.device, dtype=self.dtype)
+            raise RuntimeError("Face recognition model not loaded")
+        dummy = torch.rand(1, 3, self.input_size, self.input_size)
         with torch.no_grad():
             emb = self.forward(dummy)
         self._embedding_dim = emb.shape[-1]
         return self._embedding_dim
+
+    @property
+    def is_differentiable(self) -> bool:
+        """Whether gradients flow through this model."""
+        return self._use_pytorch
 
 
 @dataclass

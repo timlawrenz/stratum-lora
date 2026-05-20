@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import os
+import sys
 import numpy as np
 import torch
 from diffusers import StableDiffusionXLPipeline
@@ -45,6 +46,9 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if device.type == "cuda" else torch.float32
     print(f"Device: {device}, dtype: {dtype}")
+
+    # Add project root to path for library imports
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     # Load target embedding
     data = np.load(args.target_emb)
@@ -81,16 +85,16 @@ def main():
         seed = args.seed_start + i
 
         # Generate with LoRA A (AuraFace)
-        pipe.load_lora_weights(args.lora_a, adapter_name="auraface")
-        pipe.set_adapters(["auraface"])
+        pipe.delete_adapters("default")
+        pipe.load_lora_weights(args.lora_a, adapter_name="default")
         generator = torch.Generator(device=device).manual_seed(seed)
         img_a = pipe(args.prompt, num_inference_steps=args.steps,
                      guidance_scale=args.cfg, generator=generator).images[0]
         img_a.save(os.path.join(args.output_dir, f"auraface_{seed:04d}.png"))
 
         # Generate with LoRA B (control)
-        pipe.load_lora_weights(args.lora_b, adapter_name="control")
-        pipe.set_adapters(["control"])
+        pipe.delete_adapters("default")
+        pipe.load_lora_weights(args.lora_b, adapter_name="default")
         generator = torch.Generator(device=device).manual_seed(seed)
         img_b = pipe(args.prompt, num_inference_steps=args.steps,
                      guidance_scale=args.cfg, generator=generator).images[0]

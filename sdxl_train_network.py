@@ -204,6 +204,26 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         vector_embedding = torch.cat([pool2, embs], dim=1).to(weight_dtype)
         text_embedding = torch.cat([encoder_hidden_states1, encoder_hidden_states2], dim=2).to(weight_dtype)
 
+        # Inject DINOv3 CLS token if available
+        if self.dinov3_token is not None and self.dino_projection is not None:
+            batch_size = noisy_latents.shape[0]
+            dino_token = self.dinov3_token.expand(batch_size, -1)  # (B, 1024)
+
+            # Conditioning dropout: replace with zeros during training
+            if torch.is_grad_enabled() and self.dino_dropout > 0:
+                mask = torch.rand(batch_size, 1, device=dino_token.device) > self.dino_dropout
+                dino_token = dino_token * mask.float()
+
+            # Project to 2048-dim and append as extra token
+            dino_seq = self.dino_projection(dino_token)  # (B, 1, 2048)
+
+            # Pad to 80 tokens: 77 text + 1 DINO + 2 pad = 80
+            # FlashAttention kernels are optimized for multiples of 8/16.
+            # 78 tokens would silently fall back to standard math attention.
+            padding = torch.zeros(batch_size, 2, 2048,
+                                 device=dino_seq.device, dtype=weight_dtype)
+            text_embedding = torch.cat([text_embedding, dino_seq, padding], dim=1)  # (B, 80, 2048)
+
         if indices is not None and len(indices) > 0:
             noisy_latents = noisy_latents[indices]
             timesteps = timesteps[indices]

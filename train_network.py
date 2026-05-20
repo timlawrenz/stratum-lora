@@ -785,6 +785,14 @@ class NetworkTrainer:
             trainable_params = network.prepare_optimizer_params(text_encoder_lr, args.unet_lr)
             lr_descriptions = None
 
+        # Register DINOv3 projection parameters with optimizer
+        if self.dino_projection is not None:
+            trainable_params.append({
+                "params": self.dino_projection.parameters(),
+                "lr": args.learning_rate,
+            })
+            logger.info("DINOv3 projection added to optimizer")
+
         # if len(trainable_params) == 0:
         #     accelerator.print("no trainable parameters found / 学習可能なパラメータが見つかりませんでした")
         # for params in trainable_params:
@@ -996,6 +1004,25 @@ class NetworkTrainer:
 
                 # Ensure VAE is on GPU for ID loss (may have been moved to CPU by latent caching)
                 vae.to(accelerator.device, dtype=vae_dtype)
+
+        # Initialize DINOv3 identity conditioning if enabled
+        self.dinov3_token = None
+        self.dino_projection = None
+        if getattr(args, 'dinov3_token', None) and os.path.exists(args.dinov3_token):
+            from library.dinov3_utils import DINOProjection
+            import numpy as np
+
+            logger.info(f"Loading DINOv3 CLS token from {args.dinov3_token}")
+            token = np.load(args.dinov3_token)
+            self.dinov3_token = torch.from_numpy(token).to(
+                accelerator.device, dtype=weight_dtype
+            )
+
+            self.dino_projection = DINOProjection().to(
+                accelerator.device, dtype=weight_dtype
+            )
+            self.dino_dropout = getattr(args, 'dinov3_dropout', 0.2)
+            logger.info(f"DINOv3 projection initialized. Dropout rate: {self.dino_dropout}")
 
         # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
         if args.full_fp16:
@@ -1610,6 +1637,9 @@ class NetworkTrainer:
                     if hasattr(self, '_last_id_loss') and self._last_id_loss is not None:
                         logs["loss/id"] = self._last_id_loss.item()
                         logs["loss/id_scaled"] = self._last_scaled_id_loss.item()
+                    # Log DINOv3 token status
+                    if self.dinov3_token is not None:
+                        logs["dino/active"] = 1.0 if torch.is_grad_enabled() else 0.0
                     self.step_logging(accelerator, logs, global_step, epoch + 1)
 
                 # VALIDATION PER STEP: global_step is already incremented
@@ -2006,6 +2036,20 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to PyTorch ArcFace weights (.pth) for differentiable identity loss. "
              "Download from insightface recognition/arcface_torch model zoo.",
+    )
+
+    # DINOv3 identity conditioning
+    parser.add_argument(
+        "--dinov3_token",
+        type=str,
+        default=None,
+        help="Path to .npy file with precomputed DINOv3 CLS token (averaged across dataset)",
+    )
+    parser.add_argument(
+        "--dinov3_dropout",
+        type=float,
+        default=0.2,
+        help="Probability of dropping DINO token during training (0.0-1.0). Default: 0.2",
     )
 
     return parser

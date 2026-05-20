@@ -264,6 +264,32 @@ if getattr(args, 'dinov3_token', None) and os.path.exists(args.dinov3_token):
     )
 ```
 
+**Step 2: Register DINO projection parameters with optimizer**
+
+The projection MLP must be added to the optimizer's parameter groups, or gradients will flow but the weights won't update. Find the optimizer setup section in `train()` (around line 790):
+
+```python
+trainable_params = network.prepare_optimizer_params(
+    args.text_encoder_lr, args.unet_lr, args.learning_rate
+)
+
+# Register DINO projection parameters
+if self.dino_projection is not None:
+    trainable_params.append({
+        "params": self.dino_projection.parameters(),
+        "lr": args.learning_rate,
+    })
+    logger.info("DINOv3 projection added to optimizer")
+
+optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(
+    args, trainable_params
+)
+```
+
+**Verification:** Check that `optimizer.param_groups` includes the projection MLP parameters after init.
+
+**Note:** Currently `network_train_unet_only = true`, so `text_encoder_lr` and `unet_lr` are unused. The projection uses the base `learning_rate`. A separate `--dinov3_lr` arg could be added later for fine-tuning.
+
 ---
 
 ### Task 5: Inject DINO token into UNet conditioning

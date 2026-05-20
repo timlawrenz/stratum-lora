@@ -989,6 +989,9 @@ class NetworkTrainer:
                 vae.enable_slicing()
                 logger.info("VAE tiling and slicing enabled for memory-efficient decode")
 
+                # Ensure VAE is on GPU for ID loss (may have been moved to CPU by latent caching)
+                vae.to(accelerator.device, dtype=vae_dtype)
+
         # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
         if args.full_fp16:
             train_util.patch_accelerator_for_fp16_training(accelerator)

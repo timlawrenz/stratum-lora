@@ -1,6 +1,6 @@
 # Minimal dry-run config for debugging AuraFace pipeline
 # Uses batch_size=1, only 5 steps, no saving
-# Run: python train_network.py --config_file test_dryrun.toml
+# Run: python sdxl_train_network.py --config_file test_dryrun.toml
 
 pretrained_model_name_or_path = "stabilityai/stable-diffusion-xl-base-1.0"
 output_dir = "./output/test_dryrun"
@@ -24,17 +24,20 @@ learning_rate = 1e-4
 
 min_snr_gamma = 5.0
 
-# AuraFace
-auraface_lambda = 0.1
+# AuraFace — disabled for NaN isolation
+auraface_lambda = 0.0
 auraface_data_dir = "/mnt/nas-ai-models/training-data/loras/hegre-moloko"
 auraface_threshold = 0.3
 arcface_weights = "/mnt/nas-ai-models/checkpoints/InsightFace_Pytorch+model_ir_se50.pth"
 
-mixed_precision = "fp16"
-cache_latents = true
-cache_latents_to_disk = true
+mixed_precision = "no"
+cache_latents = false
+cache_latents_to_disk = false
+enable_bucket = true
+bucket_reso_steps = 64
+bucket_no_upscale = true
 
 # Memory saving
 lowram = true
 vae_batch_size = 1
-no_half_vae = false
+no_half_vae = true

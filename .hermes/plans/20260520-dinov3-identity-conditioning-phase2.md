@@ -314,7 +314,6 @@ text_embedding = torch.cat([encoder_hidden_states1, encoder_hidden_states2], dim
 if self.dinov3_token is not None and self.dino_projection is not None:
     batch_size = noisy_latents.shape[0]
 
-    # Expand CLS token to batch
     dino_token = self.dinov3_token.expand(batch_size, -1)  # (B, 1024)
 
     # Conditioning dropout: replace with zeros p% of the time
@@ -322,9 +321,15 @@ if self.dinov3_token is not None and self.dino_projection is not None:
         mask = torch.rand(batch_size, 1, device=dino_token.device) > self.dino_dropout
         dino_token = dino_token * mask.float()
 
-    # Project to 2048-dim and add as extra sequence token
+    # Project to 2048-dim
     dino_seq = self.dino_projection(dino_token)  # (B, 1, 2048)
-    text_embedding = torch.cat([text_embedding, dino_seq], dim=1)  # (B, 78, 2048)
+
+    # Pad to 80 tokens: 77 text + 1 DINO + 2 pad = 80
+    # FlashAttention hardware kernels are optimized for multiples of 8/16.
+    # A sequence length of 78 would silently fall back to standard math attention.
+    padding = torch.zeros(batch_size, 2, 2048,
+                         device=dino_seq.device, dtype=weight_dtype)
+    text_embedding = torch.cat([text_embedding, dino_seq, padding], dim=1)  # (B, 80, 2048)
 ```
 
 **Important:** The variable `self.training` is not reliable since `process_batch()` may disable gradients. Check mode via `is_train` parameter or `torch.is_grad_enabled()`.
@@ -442,7 +447,7 @@ if __name__ == "__main__":
 
 ## Key Design Decisions
 
-1. **Token as extra sequence element**: Append DINO token to the text embedding sequence (77 → 78 tokens) rather than summing into it. This preserves all existing text conditioning while adding identity-specific attention.
+1. **Token as extra sequence element**: Append DINO token as an additional cross-attention token. Pad from 77→80 to keep FlashAttention optimized (multiples of 16).
 
 2. **Lightweight projection MLP**: 2-layer MLP with LayerNorm + GELU (1024 → 2048 → 2048). ~4.2M trainable parameters. Trained jointly with the LoRA (no separate optimizer needed — gradients flow through projection to the UNet).
 

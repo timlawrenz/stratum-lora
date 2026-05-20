@@ -51,16 +51,15 @@ class AuraFaceWrapper(nn.Module):
             logger.info(f"AuraFace (ONNX) loaded on {self.device}")
 
     def _load_pytorch_arcface(self, weights_path: str):
-        """Load ArcFace IResNet-100 from PyTorch checkpoint (differentiable)."""
-        from .iresnet import iresnet100
+        """Load ArcFace IResNet from PyTorch checkpoint (differentiable)."""
+        from .iresnet_se import IResNetSE50
 
-        model = iresnet100(fp16=(self.dtype == torch.float16))
+        model = IResNetSE50()
         state = torch.load(weights_path, map_location="cpu", weights_only=False)
         model.load_state_dict(state, strict=False)
         model.to(device=self.device, dtype=self.dtype)
         model.eval()
 
-        # Freeze all parameters — gradients flow through to input, not into model
         for param in model.parameters():
             param.requires_grad_(False)
 
@@ -134,6 +133,9 @@ class AuraFaceWrapper(nn.Module):
             embedding = torch.from_numpy(np.stack(embeddings)).to(
                 device=self.device, dtype=self.dtype
             )
+            # Squeeze extra dimension if present (get_feat may return (1, 512))
+            if embedding.dim() == 3:
+                embedding = embedding.squeeze(1)
 
         # L2 normalize
         embedding = nn.functional.normalize(embedding, p=2, dim=-1)

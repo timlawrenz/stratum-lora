@@ -98,3 +98,24 @@ See [`.hermes/plans/20260519-auraface-identity-loss-phase1.md`](.hermes/plans/20
 ## License
 
 Based on [kohya-ss/sd-scripts](https://github.com/kohya-ss/sd-scripts). ArcFace weights from [lithiumice/insightface](https://huggingface.co/lithiumice/insightface) — non-commercial use only.
+
+## Results
+
+### Phase 1: Identity loss proof of concept
+
+**Setup:** 200–400 steps, SDXL base, 512×512, fp32 on ROCm 7.2.3 (AMD Radeon 8060S, 128GB). LoRA dim=32, AdamW lr=1e-4, λ_id=0.1. ArcFace IResNet-SE50 backbone (43.8M params, frozen, differentiable). No captions, no trigger tokens.
+
+**A/B protocol:** Train two LoRAs with identical settings (one with identity loss, one without). Generate N matching-seed images from both, extract face embeddings via AuraFace ONNX, compute cosine similarity to precomputed target embedding.
+
+| Dataset | Images | Steps | AuraFace avg cos | Control avg cos | Wins | Δ |
+|---|---|---|---|---|---|---|
+| [Hegre Moloko](https://www.hegre.com/) | 43 | 200 | 0.1337 ±0.039 | 0.1147 ±0.051 | 70% | **+16.6%** |
+| Scarl3tt (Instagram) | 111 | 400 | 0.1304 ±0.064 | 0.1249 ±0.058 | 60% | +4.4% |
+
+**Key findings:**
+- Identity loss consistently improves facial fidelity across datasets
+- Effect is stronger on high-quality, consistent-illumination portraits (Moloko) than varied social-media photos (Scarl3tt)
+- Scarl3tt trained only 0.07 epochs (5,550 effective images, 400 steps) — longer training needed
+- ROCm/AMD requires fp32 + disabled latent caching to avoid NaN
+- Identity loss adds ~55% per-step overhead (VAE decode + ArcFace forward)
+- Both LoRAs weigh 163MB (dim=32, conv+linear keys)

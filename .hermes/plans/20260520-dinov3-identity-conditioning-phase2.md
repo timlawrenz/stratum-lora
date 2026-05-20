@@ -147,7 +147,7 @@ class DINOProjection(nn.Module):
 
 ### Task 2: Create DINO CLS token precomputation script
 
-**Objective:** Script to compute DINOv3 CLS token from reference image(s) and save as .npy.
+**Objective:** Compute DINOv3 CLS tokens for all training images, average to a single identity anchor, save as .npy.
 
 **Files:**
 - Create: `tools/compute_dinov3_token.py`
@@ -156,7 +156,7 @@ class DINOProjection(nn.Module):
 
 ```python
 #!/usr/bin/env python3
-"""Compute DINOv3 CLS token from a reference image and save to .npy."""
+"""Compute DINOv3 CLS tokens for all images and save averaged identity anchor."""
 
 import argparse
 import sys
@@ -165,13 +165,16 @@ import numpy as np
 import torch
 from PIL import Image
 from torchvision import transforms
+from pathlib import Path
+from tqdm import tqdm
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--image", required=True, help="Reference image path")
+    parser.add_argument("--image_dir", required=True, help="Directory of training images")
     parser.add_argument("--output", required=True, help="Output .npy file")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--batch_size", type=int, default=8)
     args = parser.parse_args()
 
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -180,7 +183,6 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     dinov3 = DINOv3Wrapper(device=device)
 
-    # DINOv3 expects 518x518 with ImageNet normalization
     transform = transforms.Compose([
         transforms.Resize((518, 518)),
         transforms.ToTensor(),
@@ -188,19 +190,39 @@ def main():
                            std=[0.229, 0.224, 0.225]),
     ])
 
-    img = Image.open(args.image).convert("RGB")
-    img_tensor = transform(img).unsqueeze(0).to(device)
+    image_dir = Path(args.image_dir)
+    images = sorted([
+        p for p in image_dir.iterdir()
+        if p.suffix.lower() in {'.jpg', '.jpeg', '.png', '.webp'}
+    ])
+    print(f"Found {len(images)} images")
 
-    cls_token = dinov3(img_tensor)  # (1, 1024)
-    np.save(args.output, cls_token.cpu().numpy())
-    print(f"Saved CLS token ({cls_token.shape}) to {args.output}")
+    all_tokens = []
+    for i in tqdm(range(0, len(images), args.batch_size)):
+        batch_paths = images[i:i + args.batch_size]
+        batch_tensors = []
+        for path in batch_paths:
+            try:
+                img = Image.open(path).convert("RGB")
+                batch_tensors.append(transform(img))
+            except Exception as e:
+                print(f"  Skipping {path.name}: {e}")
+        if not batch_tensors:
+            continue
+        batch = torch.stack(batch_tensors).to(device)
+        tokens = dinov3(batch)  # (B, 1024)
+        all_tokens.append(tokens.cpu().numpy())
+
+    all_tokens = np.concatenate(all_tokens, axis=0)  # (N, 1024)
+    mean_token = all_tokens.mean(axis=0, keepdims=True)  # (1, 1024)
+
+    np.save(args.output, mean_token)
+    print(f"Saved averaged CLS token ({mean_token.shape}) from {len(all_tokens)} images to {args.output}")
 
 
 if __name__ == "__main__":
     main()
 ```
-
-**Verification:** Run on a test image, verify output shape is (1, 1024).
 
 ---
 
@@ -453,7 +475,7 @@ if __name__ == "__main__":
 
 3. **Conditioning dropout at 20%**: During training, 20% of steps drop the DINO token (replace with zeros). This prevents the model from becoming catastrophically reliant on it, ensuring inference works without the token available.
 
-4. **Single reference image**: One DINO CLS token precomputed from a representative image. Multiple images could be averaged, but a single well-chosen reference provides sufficient identity signal.
+4. **Averaged DINOv3 tokens**: Unlike ArcFace (pose/light-invariant by design), DINOv3 CLS tokens are sensitive to lighting and composition. We compute CLS tokens for all training images and average to a single robust identity anchor.
 
 5. **Frozen DINOv3, trainable projection**: DINOv3 itself is frozen (no gradients). Only the projection MLP learns to map the semantic identity vector into the UNet's conditioning space. The LoRA weights + projection are the only trainable parameters.
 

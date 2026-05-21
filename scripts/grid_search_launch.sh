@@ -2,7 +2,10 @@
 # Grid search launch script — runs on Strix Halo
 # 9 configs: 3 methods (control, auraface, dinov3) × 3 dims (32, 64, 128)
 # Each: 3000 steps, checkpoints at 1k/2k/3k
-set -euo pipefail
+set -uo pipefail  # no -e: don't bail on first failure
+
+LOGDIR=~/grid_search_logs
+mkdir -p "$LOGDIR"
 
 cd ~/activity/stratum-lora
 source .venv/bin/activate
@@ -28,10 +31,13 @@ CURRENT=0
 
 for config in "${CONFIGS[@]}"; do
   CURRENT=$((CURRENT + 1))
+  LOGFILE="$LOGDIR/${config}.log"
   echo "══════════════════════════════════════════════════════"
-  echo "[${CURRENT}/${TOTAL}] Training ${config}"
+  echo "[${CURRENT}/${TOTAL}] Training ${config} → ${LOGFILE}"
   echo "══════════════════════════════════════════════════════"
-  python sdxl_train_network.py --config_file "configs/grid_search/${config}.toml" 2>&1
+  python sdxl_train_network.py --config_file "configs/grid_search/${config}.toml" > "$LOGFILE" 2>&1 || {
+    echo "❌ ${config} FAILED (exit $?) — continuing..."
+  }
   echo "✅ ${config} done"
 done
 

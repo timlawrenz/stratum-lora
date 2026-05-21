@@ -765,7 +765,6 @@ class NetworkTrainer:
         self.dino_projection = None
         if getattr(args, 'dinov3_token', None) and os.path.exists(args.dinov3_token):
             from library.dinov3_utils import DINOProjection
-            import numpy as np
 
             logger.info(f"Loading DINOv3 CLS token from {args.dinov3_token}")
             token = np.load(args.dinov3_token)

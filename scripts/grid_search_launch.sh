@@ -39,6 +39,9 @@ for config in "${CONFIGS[@]}"; do
     echo "❌ ${config} FAILED (exit $?) — continuing..."
   }
   echo "✅ ${config} done"
+  # Clean up any leaked GPU memory
+  pkill -f sdxl_train_network 2>/dev/null || true
+  sleep 5
 done
 
 echo "══════════════════════════════════════════════════════"

@@ -776,7 +776,8 @@ class NetworkTrainer:
                 accelerator.device, dtype=weight_dtype
             )
             self.dino_dropout = getattr(args, 'dinov3_dropout', 0.2)
-            logger.info(f"DINOv3 projection initialized. Dropout rate: {self.dino_dropout}")
+            self.dino_repeat = getattr(args, 'dinov3_repeat', 4)
+            logger.info(f"DINOv3 projection initialized. Dropout: {self.dino_dropout}, Repeat: {self.dino_repeat}x")
 
         # make backward compatibility for text_encoder_lr
         support_multiple_lrs = hasattr(network, "prepare_optimizer_params_with_multiple_te_lrs")
@@ -803,13 +804,14 @@ class NetworkTrainer:
             trainable_params = network.prepare_optimizer_params(text_encoder_lr, args.unet_lr)
             lr_descriptions = None
 
-        # Register DINOv3 projection parameters with optimizer
+        # Register DINOv3 projection parameters with optimizer (higher LR — learns from scratch)
         if self.dino_projection is not None:
+            dino_lr = getattr(args, 'dinov3_lr', 5e-3)
             trainable_params.append({
                 "params": self.dino_projection.parameters(),
-                "lr": args.learning_rate,
+                "lr": dino_lr,
             })
-            logger.info("DINOv3 projection added to optimizer")
+            logger.info(f"DINOv3 projection added to optimizer (lr={dino_lr})")
 
         # if len(trainable_params) == 0:
         #     accelerator.print("no trainable parameters found / 学習可能なパラメータが見つかりませんでした")
@@ -2049,6 +2051,20 @@ def setup_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.2,
         help="Probability of dropping DINO token during training (0.0-1.0). Default: 0.2",
+    )
+    parser.add_argument(
+        "--dinov3_repeat",
+        type=int,
+        default=4,
+        help="Number of times to tile the projected DINO token before concatenation. "
+             "Increases attention surface area. Default: 4",
+    )
+    parser.add_argument(
+        "--dinov3_lr",
+        type=float,
+        default=5e-3,
+        help="Learning rate for DINOv3 projection MLP (learns from scratch, needs higher LR). "
+             "Default: 5e-3",
     )
 
     return parser

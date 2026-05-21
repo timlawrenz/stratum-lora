@@ -214,15 +214,16 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
                 mask = torch.rand(batch_size, 1, device=dino_token.device) > self.dino_dropout
                 dino_token = dino_token * mask.float()
 
-            # Project to 2048-dim and append as extra token
+            # Project to 2048-dim and tile for attention surface area
             dino_seq = self.dino_projection(dino_token)  # (B, 1, 2048)
+            dino_seq = dino_seq.repeat(1, self.dino_repeat, 1)  # (B, R, 2048)
 
-            # Pad to 80 tokens: 77 text + 1 DINO + 2 pad = 80
-            # FlashAttention kernels are optimized for multiples of 8/16.
-            # 78 tokens would silently fall back to standard math attention.
-            padding = torch.zeros(batch_size, 2, 2048,
+            # Pad to 96 tokens: 77 text + R DINO + (19-R) pad = 96
+            # 96 is a multiple of 16 → FlashAttention-optimized
+            pad_tokens = 96 - 77 - self.dino_repeat
+            padding = torch.zeros(batch_size, pad_tokens, 2048,
                                  device=dino_seq.device, dtype=weight_dtype)
-            text_embedding = torch.cat([text_embedding, dino_seq, padding], dim=1)  # (B, 80, 2048)
+            text_embedding = torch.cat([text_embedding, dino_seq, padding], dim=1)
 
         if indices is not None and len(indices) > 0:
             noisy_latents = noisy_latents[indices]
